@@ -41,10 +41,33 @@ def get_ext(filename):
   f, e = os.path.splitext(filename)
   return e.lower()
 
-def to_ass_time(seconds_ms):
+def to_srt_time(seconds_ms):
   '''convert strictly seconds string (may have fractional part)
     to a standard .ass file time: 00:00:33,381 --> 00:00:36,384
   '''
+  m = '0'
+  s = seconds_ms
+  seconds_ms = seconds_ms[:seconds_ms.find('.')+2]
+  if '.' in seconds_ms:
+    (s, m) = seconds_ms.split('.')
+  sec = int(s)
+  milliseconds = int(m)
+  days = sec / 86400
+  sec -= 86400*days
+
+  hrs = sec / 3600
+  sec -= 3600*hrs
+
+  mins = sec / 60
+  sec -= 60*mins
+
+  return u'{h:02d}:{m:02d}:{s:02d},{ms:03d}'.format(h=hrs, m=mins, s=sec, ms=milliseconds)
+
+def to_ass_time(seconds_ms):
+  '''convert strictly seconds string (may have fractional part)
+    to a standard .ass file time: 00:00:33.38 --> 00:00:36.38
+  '''
+  seconds_ms = str(int(float(seconds_ms) * 10**2) / 10.0**2)
   m = '0'
   s = seconds_ms
   if '.' in seconds_ms:
@@ -60,7 +83,7 @@ def to_ass_time(seconds_ms):
   mins = sec / 60
   sec -= 60*mins
 
-  return u'{h:02d}:{m:02d}:{s:02d},{ms:03d}'.format(h=hrs, m=mins, s=sec, ms=milliseconds)
+  return u'{h:01d}:{m:02d}:{s:02d}.{ms:02d}'.format(h=hrs, m=mins, s=sec, ms=milliseconds)
   
 
 class Style(object):
@@ -87,9 +110,12 @@ class Scaling(object):
   def scale(self, x, y):
     '''Scale given x,y from inital to final screen coordinates 
     '''
-    scale_w = self.fw/self.iw
-    scale_h = self.fh/self.ih
-    return (x*scale_w, scaled_y*scale_h)
+    scale_w = float(self.fw)/float(self.iw)
+    scale_h = float(self.fh)/float(self.ih)
+    return (int(float(x)*scale_w), int(float(y)*scale_h))
+
+  def __call__(self, x, y):
+    return self.scale(x,y)
 
 class Subtitle(object):
   '''Encapsultate a given subtitle text and its format 
@@ -97,10 +123,101 @@ class Subtitle(object):
   def __init__(self, text, x=0, y=0, style=None):
     pass
 
-def ConvertToAss(content, outfile_name):
-  pass
+def ConvertToAss(content, outfile_name, scaling):
+  '''Convert to more flexible .ass format.
+  More appropriate for these subs which have furigana, color etc
+  '''
+  outfile = codecs.open(outfile_name,'w',encoding='utf8')
+  soup = BeautifulSoup(content, features="xml")
 
-def ConvertToSrt(content, outfile_name):
+  info = u'''[Script Info]
+  Title: {title}
+  ScriptType: v4.00+
+  WrapStyle: 0
+  PlayResX: {width}
+  PlayResY: {height}
+  ScaledBorderAndShadow: yes
+  Video Aspect Ratio: 0
+  Video Zoom: 6
+  Video Position: 0
+  '''.format(title=outfile_name, width=scaling.fw, height=scaling.fh)
+  print(info, file=outfile)
+
+  #gonna leave these styles in place
+  #TODO: draw them out of the file
+  styles = u'''[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,MS UI Gothic,24,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,2,1,10,10,10,0
+Style: Box,MS UI Gothic,24,&HFFFFFFFF,&H000000FF,&H00FFFFFF,&H00FFFFFF,0,0,0,0,100,100,0,0,1,2,2,2,10,10,10,0
+Style: Rubi,MS UI Gothic,14,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,2,1,10,10,10,0
+'''
+  print(styles, file=outfile)
+
+  events='''[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+'''
+  print(events, file=outfile)
+  
+  '''
+  subsequent lines should be of form:
+  Dialogue: 0,0:02:12.78,0:02:15.78,Default,,0000,0000,0000,,{\pos(580,1020)}＜世はグルメ時代＞\N
+  Dialogue: 0,0:02:15.78,0:02:18.78,Default,,0000,0000,0000,,{\pos(420,1020)}＜食の探求者 美食屋たちは・\N
+  Dialogue: 0,0:02:18.78,0:02:22.79,Default,,0000,0000,0000,,{\pos(420,1020)}あまたの食材を追い求める＞\N
+  Dialogue: 0,0:02:22.79,0:02:28.79,Default,,0000,0000,0000,,{\pos(420,840)}＜そして この世の食材の頂点\N
+  Dialogue: 0,0:02:22.79,0:02:28.79,Rubi,,0000,0000,0000,,{\pos(500,900)}ゴッド\N
+  '''
+  cuepoints = soup.cuepoints
+  captions = cuepoints.find_all('cuepoint')
+
+  for i, caption in enumerate(captions[:-1]):
+    #we need next caption to interpret the display time
+    next_caption_time = captions[i+1]['time']
+    #print caption.time
+    subtitles = caption.find_all('subtitle')
+    if not subtitles: continue
+
+    #.ass time display
+    #00:00:33,381 --> 00:00:36,384
+    start_time_s = to_ass_time(caption['time'])
+    end_time_s = to_ass_time(next_caption_time)
+    #print(u'{s} --> {e}'.format(s=start_time_s, e=end_time_s), file=outfile)
+    
+    #form caption text from 'subtitle' entries
+    caption_text = u''
+    for s in subtitles:
+      blurb= s.contents[0].strip()
+      #this subtitle may be a "gaiji" (actually DRCS) character. If so we'll just use the
+      #provided substitution string
+      blurb = s.get('substitution_string', blurb)
+      
+      x, y = scaling(s['xx'],s['yy'])
+      style = 'Default'
+      if s.get('ruby', u'false') != u'false':
+        style = 'Rubi'
+      color=s.get('color',u'0xffffff')
+      background=s['background']
+      opacity=s['opacity']
+      
+      dialog = u'Dialogue: 0,{start},{end},{style},,0000,0000,0000,,{{\pos({x},{y})}}{blurb}'.format(
+      start=start_time_s,
+      end=end_time_s,
+      style=style,
+      x=x,
+      y=y,
+      blurb=blurb
+      )
+      print(dialog, file=outfile)
+      '''
+      print (u'{x},{y},{color},{background},{opacity},{style}-->{text}'.format(x=s['x'],
+        y=s['y'], 
+        color=s.get('color',u'0xffffff'),
+        background=s['background'],
+        opacity=s['opacity'],
+        ruby=s.get('ruby', u'false'),
+        text=blurb,), file=outfile)
+      '''
+  
+def ConvertToSrt(content, outfile_name, scaling):
   '''Convert an NHK .ttml input file (contents string) to srt
   :param infile: string contents of input .ttml file 
   :type infile: str
@@ -125,8 +242,8 @@ def ConvertToSrt(content, outfile_name):
 
     #.ass time display
     #00:00:33,381 --> 00:00:36,384
-    start_time_s = to_ass_time(caption['time'])
-    end_time_s = to_ass_time(next_caption_time)
+    start_time_s = to_srt_time(caption['time'])
+    end_time_s = to_srt_time(next_caption_time)
     print(u'{s} --> {e}'.format(s=start_time_s, e=end_time_s), file=outfile)
     
     #form caption text from 'subtitle' entries
@@ -181,7 +298,8 @@ def main():
 
   content_file = open(infile, 'r')
   content = content_file.read()
-  return conversion_impl(content, outfile)
+  scaling = Scaling(1600, 900, 640, 360)
+  return conversion_impl(content, outfile, scaling)
         
 
 if __name__ == "__main__":
